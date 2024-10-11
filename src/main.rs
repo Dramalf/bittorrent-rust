@@ -10,7 +10,7 @@ fn decode_bencoded_value(encoded_value: &str) -> serde_json::Value {
 }
 fn decode_bencoded_start_at(raw_value:&str,start_index:usize)->(serde_json::Value,usize){
     let encoded_value=&raw_value[start_index..];
-    // println!("index:{:?},len:{:?}",start_index,encoded_value);
+    eprintln!("index:{:?},len:{:?}",start_index,encoded_value);
 
     match encoded_value.chars().next().unwrap() {
         c if c.is_digit(10) => {
@@ -49,6 +49,26 @@ fn decode_bencoded_start_at(raw_value:&str,start_index:usize)->(serde_json::Valu
 
             }
             (list.into(),index+1)
+        }
+        'd'=>{
+            let mut dict:serde_json::Map<String,serde_json::Value>=serde_json::Map::new();
+            let mut index=start_index+1;
+            while raw_value.chars().nth(index).unwrap()!='e'{
+                let (key,new_index)=decode_bencoded_start_at(raw_value,index);
+
+                let (value,new_index)=decode_bencoded_start_at(raw_value,new_index);
+                if let serde_json::Value::String(key)=key{
+                    dict.insert(key,value);
+                }
+                else{
+                    panic!("Unhandled encoded value: {}", encoded_value)
+                }
+                index=new_index;
+                if raw_value.len()<=index {
+                    panic!("Unhandled encoded value: {}", encoded_value)
+                }
+            }
+            (dict.into(),index+1)
         }
         _ => {
             panic!("Unhandled encoded value: {}", encoded_value)
