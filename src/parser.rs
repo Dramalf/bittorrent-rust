@@ -89,7 +89,7 @@ pub fn decode_bencoded_vec_start_at(raw_vec:&[u8],start_index:usize)->(serde_jso
                         (serde_json::Value::String(string),start_index+part_len+1)
                     }
                     else{
-                        (encoded_vec[0..colon_index].to_vec().into(),start_index+colon_index+number as usize+1)
+                        (encoded_vec[colon_index + 1..colon_index + 1 + number as usize].to_vec().into(),start_index+colon_index+number as usize+1)
                     }
                 }
                 _=>{

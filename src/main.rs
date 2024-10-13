@@ -4,6 +4,7 @@ use serde::Deserialize;
 mod parser;
 mod sign;
 mod metainfo_reader;
+use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
 
 use anyhow::{bail, Context, Result};
 use serde_bencode::value::Value;
@@ -95,14 +96,15 @@ fn main() -> Result<()> {
             let metainfo_file_path=&args[2];
             let metainfo_file_content=metainfo_reader::read_file_to_bytes(metainfo_file_path).unwrap();
             let parsed_value=parser::decode_bencoded_vec(&metainfo_file_content);
-            println!("{:?}",parsed_value);
-            // if let Value::Dict(dict) = parsed_value{
-                
-            // }
-            // println!("Tracker URL: {}",parsed_value["announce"].as_str().unwrap().trim_matches('"'));
-            // println!("Length: {:?}",parsed_value["info"]["length"].as_i64().unwrap());
-            // let hash: String = hex::encode(Sha1::digest(serde_bencode::to_bytes(&parsed_value)?));
-            // println!("Info Hash: {}",hash);
+            println!("Piece Length: {}",parsed_value["info"]["piece length"].as_u64().unwrap());
+            println!("Piece Hashes:");
+            let piece_hashes=parsed_value["info"]["pieces"].as_array().unwrap();
+            let piece_hashes: Vec<u8> = piece_hashes.iter().map(|x| x.as_u64().unwrap() as u8).collect();
+            hex::encode(piece_hashes).chars().collect::<Vec<char>>().chunks_exact(40).for_each(|chunk|{
+                let hash: String = chunk.iter().collect();
+                println!("{}", hash.trim_matches('"'));
+            });
+            
         }
         _=>{
             println!("unknown command: {}", args[1]);
