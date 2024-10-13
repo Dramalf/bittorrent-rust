@@ -95,6 +95,7 @@ fn main() -> Result<()> {
             let metainfo_file_path=&args[2];
             let metainfo_file_content=metainfo_reader::read_file_to_bytes(metainfo_file_path).unwrap();
             let parsed_value=parser::decode_bencoded_vec(&metainfo_file_content);
+            println!("{:?}",parsed_value);
             // if let Value::Dict(dict) = parsed_value{
                 
             // }
