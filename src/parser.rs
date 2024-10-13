@@ -1,4 +1,5 @@
 use std::{result, string};
+use sha1::{Sha1, Digest};
 
 use serde_json;
 use crate::sign::Sign;
@@ -147,6 +148,15 @@ pub fn decode_bencoded_vec_start_at(raw_vec:&[u8],start_index:usize)->(serde_jso
 fn read_vecu8_to_string(vec:&[u8])->Option<String>{
     match String::from_utf8(vec.to_vec()){
         Ok(result)=>Some(result),
-        Err(_)=>None
+        Err(_)=>{
+            let mut hasher = Sha1::new();
+            hasher.update(vec);
+            match hasher.finalize(){
+                slice=>{
+                    Some(hex::encode(&slice))
+                }
+                _=>None
+            }
+        }
     }
 }
