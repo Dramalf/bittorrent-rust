@@ -1,8 +1,5 @@
-use std::{result, string};
-use sha1::{Sha1, Digest};
 
 use serde_json;
-use crate::sign::Sign;
 pub fn decode_bencoded_value(encoded_value: &str) -> serde_json::Value {
     decode_bencoded_start_at(encoded_value,0).0
 }
@@ -150,4 +147,13 @@ fn read_vecu8_to_string(vec:&[u8])->Option<String>{
         Ok(result)=>Some(result),
         Err(_)=>None
     }
+}
+struct Sign;
+
+impl Sign {
+    pub const i: u8 = 'i' as u8;
+    pub const l: u8 = 'l' as u8;
+    pub const e: u8 = 'e' as u8;
+    pub const colon: u8 = ':' as u8;
+    pub const d: u8 = 'd' as u8;
 }
