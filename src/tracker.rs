@@ -20,7 +20,7 @@ pub struct TrackerRequest {
     /// For the purposes of this challenge, set this to 1.
     /// The compact representation is more commonly used in the wild, the non-compact representation is mostly supported for backward-compatibility.
     pub compact: u8,
-    pub left: usize,
+    pub left: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]

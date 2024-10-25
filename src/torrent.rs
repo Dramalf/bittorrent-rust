@@ -11,9 +11,9 @@ pub struct Torrent{
 #[derive(Clone,Debug, Deserialize, Serialize)]
 pub struct Info{
     pub name: String,
-    pub length: usize,
+    pub length: u64,
     #[serde(rename = "piece length")]
-    pub piece_length: u64,
+    pub piece_length: usize,
     pub pieces: Hashes,
 }
 
