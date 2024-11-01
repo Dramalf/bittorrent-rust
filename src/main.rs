@@ -2,6 +2,7 @@ use anyhow::Context;
 use bittorrent_starter_rust::torrent::{self, Torrent};
 use bittorrent_starter_rust::tracker::*;
 use bittorrent_starter_rust::{peer::*, BLOCK_MAX};
+use bittorrent_starter_rust::magnet::Magnet;
 use clap::{Parser, Subcommand};
 use futures_util::{SinkExt, StreamExt};
 use serde_bencode;
@@ -10,6 +11,7 @@ use sha1::{Digest, Sha1};
 use std::net::SocketAddrV4;
 use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use reqwest::Url;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -44,6 +46,9 @@ enum Command {
         #[arg(short)]
         output: PathBuf,
         torrent: PathBuf,
+    },
+    MagnetParse {
+        link: String,
     },
 }
 
@@ -298,6 +303,11 @@ async fn main() -> anyhow::Result<()> {
                 files.into_iter().next().expect("always one file").bytes(),
             )
             .await?;
+        }
+        Command::MagnetParse { link } => {
+            let magnet = Magnet::new(&link)?;
+            println!("Tracker URL: {}", magnet.tracker_url.unwrap());
+            println!("Info Hash: {}", hex::encode(magnet.info_hash));
         }
     }
 

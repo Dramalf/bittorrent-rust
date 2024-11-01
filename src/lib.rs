@@ -1,5 +1,5 @@
 pub const BLOCK_MAX: usize = 1 << 14;
-
+pub mod magnet;
 pub mod download;
 pub mod peer;
 pub mod piece;
