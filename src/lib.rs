@@ -1,7 +1,6 @@
-pub const BLOCK_MAX: usize = 1 << 14;
+pub mod decode;
 pub mod magnet;
-pub mod download;
 pub mod peer;
-pub mod piece;
 pub mod torrent;
 pub mod tracker;
+pub mod extension;
