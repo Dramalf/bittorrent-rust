@@ -1,20 +1,15 @@
-use std::fs;
-use bittorrent_starter_rust::{peer::MessageFramer, tracker::*};
-use bittorrent_starter_rust::torrent::Torrent;
-use bittorrent_starter_rust::peer::*;
-use std::path::PathBuf;
-use clap::{command, Parser, Subcommand};
-mod torrent;
-mod my_parser;
-mod metainfo_reader;
 use anyhow::Context;
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream};
+use bittorrent_starter_rust::torrent::{self, Torrent};
+use bittorrent_starter_rust::tracker::*;
+use bittorrent_starter_rust::{peer::*, BLOCK_MAX};
+use clap::{Parser, Subcommand};
 use futures_util::{SinkExt, StreamExt};
 use serde_bencode;
 use serde_json;
 use sha1::{Digest, Sha1};
 use std::net::SocketAddrV4;
-
+use std::path::PathBuf;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -22,220 +17,355 @@ struct Args {
     #[command(subcommand)]
     command: Command,
 }
+
 #[derive(Subcommand, Debug)]
 #[clap(rename_all = "snake_case")]
-enum Command{
-    Decode{
-        encoded_value:String,
+enum Command {
+    Decode {
+        value: String,
     },
-    Info{
-        torren:PathBuf,
+    Info {
+        torrent: PathBuf,
     },
-    Peers{
-        torrent:PathBuf,
+    Peers {
+        torrent: PathBuf,
     },
-    Handshake{
-        torrent:PathBuf,
-        addr:String,
+    Handshake {
+        torrent: PathBuf,
+        peer: String,
     },
-    DownloadPiece{
+    DownloadPiece {
         #[arg(short)]
         output: PathBuf,
         torrent: PathBuf,
         piece: usize,
-    }
+    },
+    Download {
+        #[arg(short)]
+        output: PathBuf,
+        torrent: PathBuf,
+    },
 }
 
-const BLOCK_SIZE: usize=1<<14;
-
-
+// Usage: your_bittorrent.sh decode "<encoded_value>"
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    match args.command{
-        Command::Decode{encoded_value}=>{
-            let decoded_value = my_parser::decode_bencoded_value(&encoded_value);
-            println!("{}", decoded_value.to_string());
+
+    match args.command {
+        Command::Decode { value } => {
+            let v = decode_bencoded_value(&value).0;
+            println!("{v}");
         }
-        Command::Info { torren }=>{
-            let f: Vec<u8>=fs::read(torren).context("read torrent file")?;
-            let t:Torrent=serde_bencode::from_bytes(&f).context("parse torrent file")?;
-            // println!("{:?}", t);
+        Command::Info { torrent } => {
+            let dot_torrent = std::fs::read(torrent).context("read torrent file")?;
+            let t: Torrent =
+                serde_bencode::from_bytes(&dot_torrent).context("parse torrent file")?;
+            // eprintln!("{t:?}");
             println!("Tracker URL: {}", t.announce);
-            let length=t.info.length;
+            let length = if let torrent::Keys::SingleFile { length } = t.info.keys {
+                length
+            } else {
+                todo!();
+            };
             println!("Length: {length}");
             let info_hash = t.info_hash();
             println!("Info Hash: {}", hex::encode(&info_hash));
-            println!("Piece Length: {}", t.info.piece_length);
+            println!("Piece Length: {}", t.info.plength);
             println!("Piece Hashes:");
             for hash in t.info.pieces.0 {
                 println!("{}", hex::encode(&hash));
             }
         }
-        Command::Peers { torrent }=>{
-            let f: Vec<u8>=fs::read(torrent).context("read torrent file")?;
-            let t:Torrent=serde_bencode::from_bytes(&f).context("parse torrent file")?;
-            let tracker:TrackerRequest=TrackerRequest::new(&t);
-            let response:TrackerResponse=tracker.send(&t.announce,&t.info_hash()).await?;
-            for peer in response.peers.0{
-                println!("{}", peer);
+        Command::Peers { torrent } => {
+            let dot_torrent = std::fs::read(torrent).context("read torrent file")?;
+            let t: Torrent =
+                serde_bencode::from_bytes(&dot_torrent).context("parse torrent file")?;
+            let length = if let torrent::Keys::SingleFile { length } = t.info.keys {
+                length
+            } else {
+                todo!();
+            };
+
+            let info_hash = t.info_hash();
+            let request = TrackerRequest {
+                peer_id: String::from("00112233445566778899"),
+                port: 6881,
+                uploaded: 0,
+                downloaded: 0,
+                left: length,
+                compact: 1,
+            };
+
+            let url_params =
+                serde_urlencoded::to_string(&request).context("url-encode tracker parameters")?;
+            let tracker_url = format!(
+                "{}?{}&info_hash={}",
+                t.announce,
+                url_params,
+                &urlencode(&info_hash)
+            );
+            let response = reqwest::get(tracker_url).await.context("query tracker")?;
+            let response = response.bytes().await.context("fetch tracker response")?;
+            let response: TrackerResponse =
+                serde_bencode::from_bytes(&response).context("parse tracker response")?;
+            for peer in &response.peers.0 {
+                println!("{}:{}", peer.ip(), peer.port());
             }
-        },
-        Command::Handshake { torrent, addr}=>{
-            let f: Vec<u8>=fs::read(torrent).context("read torrent file")?;
-            let t:Torrent=serde_bencode::from_bytes(&f).context("parse torrent file")?;
-            let info_hash=t.info_hash();
-            let mut handshake=Handshake::new(info_hash, *b"-0-1-2-3-4-5-6-7-8-9");
-            let mut stream = TcpStream::connect(&addr).await?;
-            let bytes=handshake.to_btyes();
-            stream.write_all(&bytes).await?;
-            let mut buf=[0;68];
-            stream.read_exact(&mut buf).await?;
-            handshake=Handshake::from_bytes(&buf);
-            // assert_eq!(handshake.length, 19);
-            // assert_eq!(&handshake.bittorrent, b"BitTorrent protocol");
+        }
+        Command::Handshake { torrent, peer } => {
+            let dot_torrent = std::fs::read(torrent).context("read torrent file")?;
+            let t: Torrent =
+                serde_bencode::from_bytes(&dot_torrent).context("parse torrent file")?;
+
+            let info_hash = t.info_hash();
+            let peer = peer.parse::<SocketAddrV4>().context("parse peer address")?;
+            let mut peer = tokio::net::TcpStream::connect(peer)
+                .await
+                .context("connect to peer")?;
+            let mut handshake = Handshake::new(info_hash, *b"00112233445566778899");
+            {
+                let handshake_bytes =
+                    &mut handshake as *mut Handshake as *mut [u8; std::mem::size_of::<Handshake>()];
+                // Safety: Handshake is a POD with repr(c) and repr(packed)
+                let handshake_bytes: &mut [u8; std::mem::size_of::<Handshake>()] =
+                    unsafe { &mut *handshake_bytes };
+                peer.write_all(handshake_bytes)
+                    .await
+                    .context("write handshake")?;
+                peer.read_exact(handshake_bytes)
+                    .await
+                    .context("read handshake")?;
+            }
+            assert_eq!(handshake.length, 19);
+            assert_eq!(&handshake.bittorrent, b"BitTorrent protocol");
             println!("Peer ID: {}", hex::encode(&handshake.peer_id));
-        }   
+        }
         Command::DownloadPiece {
             output,
             torrent,
             piece: piece_i,
-        } =>{
-            let f: Vec<u8>=fs::read(torrent).context("read torrent file")?;
-            let t:Torrent=serde_bencode::from_bytes(&f).context("parse torrent file")?;
-            let length=t.info.length;
-            let info_hash=t.info_hash();
-            let tracker:TrackerRequest=TrackerRequest::new(&t);
-            let response:TrackerResponse=tracker.send(&t.announce,&t.info_hash()).await?;
-            let addr=&response.peers.0[0];
-            let mut stream = tokio::net::TcpStream::connect(addr).await.context("connect to peer")?;
-            let mut handshake = Handshake::new(info_hash, *b"00112233445566778899");
-            let bytes=handshake.to_btyes();
-            stream.write_all(&bytes).await?;
-            let mut buf=[0;68];
-            stream.read_exact(&mut buf).await?;
+        } => {
+            let dot_torrent = std::fs::read(torrent).context("read torrent file")?;
+            let t: Torrent =
+                serde_bencode::from_bytes(&dot_torrent).context("parse torrent file")?;
+            let length = if let torrent::Keys::SingleFile { length } = t.info.keys {
+                length
+            } else {
+                todo!();
+            };
+            assert!(piece_i < t.info.pieces.0.len());
 
-            let mut peer: tokio_util::codec::Framed<TcpStream, MessageFramer> = tokio_util::codec::Framed::new(stream, MessageFramer);
-            let bitfield=peer.next().await.expect("peer always sends abitfields").context("peer messagewasinvalid")?;
-            eprintln!("{:?}",bitfield);
+            let info_hash = t.info_hash();
+            let request = TrackerRequest {
+                peer_id: String::from("00112233445566778899"),
+                port: 6881,
+                uploaded: 0,
+                downloaded: 0,
+                left: length,
+                compact: 1,
+            };
+
+            let url_params =
+                serde_urlencoded::to_string(&request).context("url-encode tracker parameters")?;
+            let tracker_url = format!(
+                "{}?{}&info_hash={}",
+                t.announce,
+                url_params,
+                &urlencode(&info_hash)
+            );
+            let response = reqwest::get(tracker_url).await.context("query tracker")?;
+            let response = response.bytes().await.context("fetch tracker response")?;
+            let tracker_info: TrackerResponse =
+                serde_bencode::from_bytes(&response).context("parse tracker response")?;
+
+            let peer = &tracker_info.peers.0[0];
+            let mut peer = tokio::net::TcpStream::connect(peer)
+                .await
+                .context("connect to peer")?;
+            let mut handshake = Handshake::new(info_hash, *b"00112233445566778899");
+            {
+                let handshake_bytes = handshake.as_bytes_mut();
+                peer.write_all(handshake_bytes)
+                    .await
+                    .context("write handshake")?;
+                peer.read_exact(handshake_bytes)
+                    .await
+                    .context("read handshake")?;
+            }
+            assert_eq!(handshake.length, 19);
+            assert_eq!(&handshake.bittorrent, b"BitTorrent protocol");
+
+            let mut peer = tokio_util::codec::Framed::new(peer, MessageFramer);
+            let bitfield = peer
+                .next()
+                .await
+                .expect("peer always sends a bitfields")
+                .context("peer message was invalid")?;
+            assert_eq!(bitfield.tag, MessageTag::Bitfield);
+            // NOTE: we assume that the bitfield covers all pieces
+
             peer.send(Message {
-                id: MessageId::Interested,
-                payload: Box::new(Vec::new()),
-            }).await.context("send interested message")?;
+                tag: MessageTag::Interested,
+                payload: Vec::new(),
+            })
+            .await
+            .context("send interested message")?;
+
             let unchoke = peer
                 .next()
                 .await
                 .expect("peer always sends an unchoke")
                 .context("peer message was invalid")?;
-            assert_eq!(unchoke.id, MessageId::Unchoke);
+            assert_eq!(unchoke.tag, MessageTag::Unchoke);
             assert!(unchoke.payload.is_empty());
-            eprintln!("unchoke message:{:?}",unchoke);
+
             let piece_hash = &t.info.pieces.0[piece_i];
             let piece_size = if piece_i == t.info.pieces.0.len() - 1 {
-                let md = length as usize % t.info.piece_length ;
+                let md = length % t.info.plength;
                 if md == 0 {
-                    t.info.piece_length
+                    t.info.plength
                 } else {
-                    md 
+                    md
                 }
             } else {
-                t.info.piece_length
+                t.info.plength
             };
-            eprintln!("t.info:{:?}",t.info);
-            let mut block_result:Vec<u8>=Vec::with_capacity(piece_size);
-            let nblocks = (piece_size + (BLOCK_SIZE - 1)) / BLOCK_SIZE;
+            // the + (BLOCK_MAX - 1) rounds up
+            let nblocks = (piece_size + (BLOCK_MAX - 1)) / BLOCK_MAX;
+            let mut all_blocks = Vec::with_capacity(piece_size);
             for block in 0..nblocks {
                 let block_size = if block == nblocks - 1 {
-                    let md = piece_size % BLOCK_SIZE;
+                    let md = piece_size % BLOCK_MAX;
                     if md == 0 {
-                        BLOCK_SIZE
+                        BLOCK_MAX
                     } else {
                         md
                     }
                 } else {
-                    BLOCK_SIZE
+                    BLOCK_MAX
                 };
-                
-                // let  payload:Vec<u8>=[(piece_i as u32).to_be_bytes().as_slice(),(begin as i32).to_be_bytes().as_slice(),(block_size as i32).to_be_bytes().as_slice()].concat();
-                // eprintln!("payload:{:?}",payload);
                 let mut request = Request::new(
                     piece_i as u32,
-                    (block * BLOCK_SIZE) as u32,
+                    (block * BLOCK_MAX) as u32,
                     block_size as u32,
                 );
                 let request_bytes = Vec::from(request.as_bytes_mut());
-                // eprint!("request_bytes:{:?}",request_bytes);
-                let request=Message{id:MessageId::Request,payload:Box::new(request_bytes)};
-                // eprintln!("{} send:{:?}",begin,request);
-
-                peer.send(request).await.context("send request message from fail")?;
-                let response = peer
-                .next()
+                peer.send(Message {
+                    tag: MessageTag::Request,
+                    payload: request_bytes,
+                })
                 .await
-                .expect("peer always sends an bad response")
-                .context("peer message was invalid")?;
-                // eprint!("response:{:?}",response);
-                anyhow::ensure!(response.id == MessageId::Piece);
-                block_result.extend_from_slice(&response.payload[8..]);
+                .with_context(|| format!("send request for block {block}"))?;
 
-                // begin+=block_size;
-                // remain-=block_size;
+                let piece = peer
+                    .next()
+                    .await
+                    .expect("peer always sends a piece")
+                    .context("peer message was invalid")?;
+                assert_eq!(piece.tag, MessageTag::Piece);
+                assert!(!piece.payload.is_empty());
+
+                let piece = Piece::ref_from_bytes(&piece.payload[..])
+                    .expect("always get all Piece response fields from peer");
+                assert_eq!(piece.index() as usize, piece_i);
+                assert_eq!(piece.begin() as usize, block * BLOCK_MAX);
+                assert_eq!(piece.block().len(), block_size);
+                all_blocks.extend(piece.block());
             }
+            assert_eq!(all_blocks.len(), piece_size);
+
             let mut hasher = Sha1::new();
-            hasher.update(&block_result);
+            hasher.update(&all_blocks);
             let hash: [u8; 20] = hasher
                 .finalize()
                 .try_into()
                 .expect("GenericArray<_, 20> == [_; 20]");
             assert_eq!(&hash, piece_hash);
 
-            tokio::fs::write(&output, block_result)
+            tokio::fs::write(&output, all_blocks)
                 .await
                 .context("write out downloaded piece")?;
-            // println!("Piece {piece_i} downloaded to {}.", output.display());
-
+            println!("Piece {piece_i} downloaded to {}.", output.display());
         }
-        _=>{
-            println!("unknown command");
+        Command::Download { output, torrent } => {
+            let torrent = Torrent::read(torrent).await?;
+            torrent.print_tree();
+            // torrent.download_all_to_file(output).await?;
+            let files = torrent.download_all().await?;
+            tokio::fs::write(
+                output,
+                files.into_iter().next().expect("always one file").bytes(),
+            )
+            .await?;
         }
     }
+
     Ok(())
 }
 
-#[repr(C)]
-#[repr(packed)]
-pub struct Request {
-    index: [u8; 4],
-    begin: [u8; 4],
-    length: [u8; 4],
+// serde_bencode -> serde_json::Value is borked, so keep our manual impl too
+fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, &str) {
+    match encoded_value.chars().next() {
+        Some('i') => {
+            if let Some((n, rest)) =
+                encoded_value
+                    .split_at(1)
+                    .1
+                    .split_once('e')
+                    .and_then(|(digits, rest)| {
+                        let n = digits.parse::<i64>().ok()?;
+                        Some((n, rest))
+                    })
+            {
+                return (n.into(), rest);
+            }
+        }
+        Some('l') => {
+            let mut values = Vec::new();
+            let mut rest = encoded_value.split_at(1).1;
+            while !rest.is_empty() && !rest.starts_with('e') {
+                let (v, remainder) = decode_bencoded_value(rest);
+                values.push(v);
+                rest = remainder;
+            }
+            return (values.into(), &rest[1..]);
+        }
+        Some('d') => {
+            let mut dict = serde_json::Map::new();
+            let mut rest = encoded_value.split_at(1).1;
+            while !rest.is_empty() && !rest.starts_with('e') {
+                let (k, remainder) = decode_bencoded_value(rest);
+                let k = match k {
+                    serde_json::Value::String(k) => k,
+                    k => {
+                        panic!("dict keys must be strings, not {k:?}");
+                    }
+                };
+                let (v, remainder) = decode_bencoded_value(remainder);
+                dict.insert(k, v);
+                rest = remainder;
+            }
+            return (dict.into(), &rest[1..]);
+        }
+        Some('0'..='9') => {
+            if let Some((len, rest)) = encoded_value.split_once(':') {
+                if let Ok(len) = len.parse::<usize>() {
+                    return (rest[..len].to_string().into(), &rest[len..]);
+                }
+            }
+        }
+        _ => {}
+    }
+
+    panic!("Unhandled encoded value: {}", encoded_value)
 }
 
-impl Request {
-    pub fn new(index: u32, begin: u32, length: u32) -> Self {
-        eprintln!("{}length{:?}",length,length.to_be_bytes());
-        Self {
-            index: index.to_be_bytes(),
-            begin: begin.to_be_bytes(),
-            length: length.to_be_bytes(),
-        }
+fn urlencode(t: &[u8; 20]) -> String {
+    let mut encoded = String::with_capacity(3 * t.len());
+    for &byte in t {
+        encoded.push('%');
+        encoded.push_str(&hex::encode(&[byte]));
     }
-
-    pub fn index(&self) -> u32 {
-        u32::from_be_bytes(self.index)
-    }
-
-    pub fn begin(&self) -> u32 {
-        u32::from_be_bytes(self.begin)
-    }
-
-    pub fn length(&self) -> u32 {
-        u32::from_be_bytes(self.length)
-    }
-
-    pub fn as_bytes_mut(&mut self) -> &mut [u8] {
-        let bytes = self as *mut Self as *mut [u8; std::mem::size_of::<Self>()];
-        // Safety: Self is a POD with repr(c) and repr(packed)
-        let bytes: &mut [u8; std::mem::size_of::<Self>()] = unsafe { &mut *bytes };
-        bytes
-    }
+    encoded
 }
